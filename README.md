@@ -34,6 +34,18 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Worldwide league coverage
+
+GoalEdge now supports dynamic competition discovery through API-Football instead of hard-coding a small league list. API-Football currently advertises 1,245 leagues and cups across countries and international competitions. Coverage and available seasons vary by competition.
+
+For Streamlit Community Cloud, add:
+
+```toml
+API_FOOTBALL_KEY = "YOUR_API_FOOTBALL_KEY"
+```
+
+The original football-data.org source remains available as a secondary provider.
+
 ## football-data.org API
 
 Create a football-data.org API token and either enter it in the website sidebar or store it securely.
@@ -94,3 +106,10 @@ The current ensemble weights for Over 2.5 are:
 ## Important
 
 GoalEdge is a football forecasting **research tool**. Model probabilities are estimates and should not be treated as guaranteed outcomes or guaranteed returns.
+
+
+## Worldwide mode
+
+Choose **API-Football — worldwide** in the sidebar. GoalEdge downloads the provider's current competition catalog, then lets you filter by country/region, search leagues and cups, choose an available season, and run the same GoalEdge model on that competition.
+
+"Every league" means every competition available from the connected data provider. No football data API literally covers every organized league on Earth, and detailed data availability varies by season and competition.

@@ -264,6 +264,81 @@ def load_football_data(competition, seasons, token):
     return prepare(pd.DataFrame(rows))
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def api_football_leagues(token):
+    """Discover every competition currently exposed by API-Football."""
+    if not token:
+        raise ValueError("No API-Football key supplied.")
+    r = requests.get(
+        "https://v3.football.api-sports.io/leagues",
+        headers={"x-apisports-key": token},
+        timeout=30,
+    )
+    r.raise_for_status()
+    payload = r.json()
+    if payload.get("errors"):
+        raise ValueError(str(payload["errors"]))
+    rows = []
+    for item in payload.get("response", []):
+        league = item.get("league", {})
+        country = item.get("country", {})
+        seasons = item.get("seasons", [])
+        rows.append({
+            "league_id": league.get("id"),
+            "league": league.get("name", "Unknown"),
+            "type": league.get("type", ""),
+            "country": country.get("name", "World"),
+            "flag": country.get("flag"),
+            "seasons": sorted(
+                [x.get("year") for x in seasons if x.get("year") is not None],
+                reverse=True,
+            ),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_api_football_history(league_id, seasons, token):
+    """Load completed fixtures for a dynamically selected league/cup."""
+    if not token:
+        raise ValueError("No API-Football key supplied.")
+    headers = {"x-apisports-key": token}
+    rows = []
+    for season in seasons:
+        page = 1
+        while True:
+            r = requests.get(
+                "https://v3.football.api-sports.io/fixtures",
+                headers=headers,
+                params={"league": int(league_id), "season": int(season), "status": "FT", "page": page},
+                timeout=30,
+            )
+            r.raise_for_status()
+            payload = r.json()
+            if payload.get("errors"):
+                raise ValueError(str(payload["errors"]))
+            for item in payload.get("response", []):
+                fixture = item.get("fixture", {})
+                teams = item.get("teams", {})
+                goals = item.get("goals", {})
+                if goals.get("home") is None or goals.get("away") is None:
+                    continue
+                rows.append({
+                    "Date": fixture.get("date", "")[:10],
+                    "HomeTeam": teams.get("home", {}).get("name"),
+                    "AwayTeam": teams.get("away", {}).get("name"),
+                    "FTHG": goals.get("home"),
+                    "FTAG": goals.get("away"),
+                })
+            paging = payload.get("paging", {})
+            if page >= int(paging.get("total") or 1):
+                break
+            page += 1
+    if not rows:
+        raise ValueError("No completed matches were returned for that league and season selection.")
+    return prepare(pd.DataFrame(rows))
+
+
 def signal_label(p):
     if p >= 0.72:
         return "ELITE", "signal-high"
@@ -303,22 +378,63 @@ st.markdown(
 
 with st.sidebar:
     st.markdown("## ⚙️ Control Center")
-    data_mode = st.radio("Data source", ["football-data.org API", "Upload CSV"], horizontal=False)
+    data_mode = st.radio(
+        "Data source",
+        ["🌍 API-Football — worldwide", "football-data.org API", "Upload CSV"],
+        horizontal=False,
+    )
 
     df = None
-    if data_mode == "football-data.org API":
+    if data_mode == "🌍 API-Football — worldwide":
+        api_key = secret_or_env("API_FOOTBALL_KEY") or ""
+        api_key = st.text_input("API-Football key", value=api_key, type="password")
+        if api_key:
+            try:
+                catalog = api_football_leagues(api_key)
+                countries = ["All countries"] + sorted(catalog["country"].dropna().unique().tolist())
+                country_filter = st.selectbox("Country / region", countries)
+                filtered = catalog if country_filter == "All countries" else catalog[catalog.country == country_filter]
+                search = st.text_input("Search league or cup", placeholder="Premier League, Jamaica, Champions League...")
+                if search:
+                    q = search.lower().strip()
+                    filtered = filtered[
+                        filtered["league"].str.lower().str.contains(q, na=False)
+                        | filtered["country"].str.lower().str.contains(q, na=False)
+                    ]
+                if filtered.empty:
+                    st.warning("No competitions match that search.")
+                else:
+                    filtered = filtered.copy()
+                    filtered["label"] = filtered.apply(
+                        lambda r: f"{r['country']} · {r['league']} ({r['type']})", axis=1
+                    )
+                    selected_label = st.selectbox(
+                        f"Competition ({len(filtered):,} shown)",
+                        filtered["label"].tolist(),
+                    )
+                    selected = filtered[filtered.label == selected_label].iloc[0]
+                    available_seasons = selected["seasons"] or [2026, 2025, 2024]
+                    default_seasons = available_seasons[:2]
+                    seasons = st.multiselect("Seasons", available_seasons, default=default_seasons)
+                    st.caption(
+                        f"Worldwide catalog: {len(catalog):,} competitions · "
+                        f"{catalog['country'].nunique():,} countries/regions"
+                    )
+                    if seasons:
+                        with st.spinner("Loading league history..."):
+                            df = load_api_football_history(selected["league_id"], seasons, api_key)
+            except Exception as e:
+                st.error(f"API-Football error: {e}")
+        else:
+            st.info("Add API_FOOTBALL_KEY in Streamlit Secrets or enter the key here.")
+
+    elif data_mode == "football-data.org API":
         default_token = secret_or_env("FOOTBALL_DATA_TOKEN") or ""
         token = st.text_input("football-data.org API token", value=default_token, type="password")
         competition_map = {
-            "Premier League": "PL",
-            "La Liga": "PD",
-            "Serie A": "SA",
-            "Bundesliga": "BL1",
-            "Ligue 1": "FL1",
-            "Eredivisie": "DED",
-            "Primeira Liga": "PPL",
-            "Championship": "ELC",
-            "Champions League": "CL",
+            "Premier League": "PL", "La Liga": "PD", "Serie A": "SA",
+            "Bundesliga": "BL1", "Ligue 1": "FL1", "Eredivisie": "DED",
+            "Primeira Liga": "PPL", "Championship": "ELC", "Champions League": "CL",
         }
         competition_name = st.selectbox("Competition", list(competition_map.keys()))
         seasons = st.multiselect("Seasons", [2026, 2025, 2024, 2023, 2022, 2021], default=[2025, 2024])
@@ -348,13 +464,13 @@ if df is None or df.empty:
     c1, c2, c3 = st.columns([1, 1.4, 1])
     with c2:
         st.markdown("### Start by connecting data")
-        st.write("Use **football-data.org** from the sidebar or upload a historical results CSV.")
+        st.write("Use **API-Football worldwide coverage**, football-data.org, or upload a historical results CSV.")
         st.code(
             "Date,HomeTeam,AwayTeam,FTHG,FTAG\n"
             "2025-08-15,Team A,Team B,2,1\n"
             "2025-08-16,Team C,Team D,0,0"
         )
-        st.info("For deployment, store your API token as a Streamlit secret named FOOTBALL_DATA_TOKEN.")
+        st.info("For worldwide coverage, store your API-Football key as a Streamlit secret named API_FOOTBALL_KEY.")
     st.stop()
 
 
